@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-forest: #0e241b;
+  --bg-forest-pill: #1d4332;
+  --accent-lime: #b9f44d;
+  --accent-emerald: #136343;
+  --bg-canvas: #f4f6f5;
+}
+
+body {
+  background-color: #f4f6f5;
+  color: #111827;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
