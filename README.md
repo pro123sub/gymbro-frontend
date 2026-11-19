@@ -43,8 +43,7 @@ Standalone **Next.js (App Router + TypeScript + Tailwind CSS)** admin portal for
 
 1. Push the `frontend/` folder as its own GitHub repository (or import your monorepo on **Vercel** and set **Root Directory** to `frontend`).
 2. Vercel automatically detects **Next.js** and uses [`vercel.json`](./vercel.json) (`npm install`, `npm run build`, and security headers).
-3. In the Vercel project **Settings -> Environment Variables** tab, configure before deploying:
+3. In the Vercel project **Settings -> Environment Variables** tab, select **Config** (non-sensitive, **not** Secret) and configure:
    - `NEXT_PUBLIC_API_BASE_URL=https://<your-backend>.up.railway.app`
-   - `NEXT_PUBLIC_TENANT_ID=crush-main-studio`
-   - `NEXT_PUBLIC_API_KEY=<optional-backend-api-key>`
-4. Deploy. All `*.vercel.app` production and preview domains are permitted by the backend's CORS configuration (`allow_origin_regex` in `backend/app/main.py`). Admins can also override the API URL at runtime from the topbar `API` settings modal in the UI.
+   *(No OpenAI, n8n, or Google Sheets keys belong in Vercel — all secrets stay safely inside your Railway backend `.env`.)*
+4. Deploy. All `*.vercel.app` production and preview domains are permitted by the backend's CORS configuration (`allow_origin_regex` in `backend/app/main.py`). Admins can also override the API URL at runtime inside the **Staff & roles** tab.

@@ -14,13 +14,11 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
     "X-Request-ID": `req-ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     "X-Tenant-ID":
       (typeof window !== "undefined" && window.localStorage.getItem("gymflow_tenant_id")) ||
-      process.env.NEXT_PUBLIC_TENANT_ID ||
       "crush-main-studio",
     ...extra,
   };
   const apiKey =
     (typeof window !== "undefined" && window.localStorage.getItem("gymflow_api_key")) ||
-    process.env.NEXT_PUBLIC_API_KEY ||
     "";
   if (apiKey.trim()) {
     headers["X-API-Key"] = apiKey.trim();
@@ -377,31 +375,48 @@ export const gymApi = {
   getDashboardAnalytics: () => apiFetch<DashboardAnalytics>("/api/v1/analytics/dashboard"),
   getEnvChecklist: () => apiFetch<Record<string, unknown>>("/api/v1/automations/n8n/env-checklist"),
 
-  // Next.js Server OpenAI + Backend Copilot Status & Brief
+  // Backend Copilot Status & Executive Brief (powered strictly by FastAPI backend credentials)
   getCopilotStatus: async (): Promise<CopilotStatus> => {
-    const res = await fetch("/api/ai-copilot", { cache: "no-store" });
-    if (!res.ok) {
+    try {
+      const checklist = await apiFetch<{
+        ai_agent_and_nextjs?: { LLM_API_KEY?: boolean; LLM_MODEL?: string };
+      }>("/api/v1/automations/n8n/env-checklist");
+      return {
+        openai_configured: Boolean(checklist.ai_agent_and_nextjs?.LLM_API_KEY),
+        openai_model: checklist.ai_agent_and_nextjs?.LLM_MODEL || "gpt-4o-mini",
+        api_base_url: getApiBaseUrl(),
+        n8n_base_url: "",
+        google_sheet_id: "",
+        studio_name: "Crush Lifestyle Fitness Studio",
+        tenant_id: "crush-main-studio",
+      };
+    } catch {
       return {
         openai_configured: false,
         openai_model: "gpt-4o-mini",
         api_base_url: getApiBaseUrl(),
-        n8n_base_url: "https://n8n-production-d690f344.up.railway.app",
+        n8n_base_url: "",
         google_sheet_id: "",
         studio_name: "Crush Lifestyle Fitness Studio",
         tenant_id: "crush-main-studio",
       };
     }
-    return (await res.json()) as CopilotStatus;
   },
   getExecutiveBrief: async (studioSnapshot: Record<string, unknown>) => {
-    const res = await fetch("/api/ai-copilot", {
+    const promptMessage = `Analyze our current studio snapshot and give a concise 3-bullet CEO growth & collection action plan:\n${JSON.stringify(studioSnapshot)}`;
+    const agentRes = await apiFetch<AgentChatResponse>("/api/v1/agent/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "executive_brief", studio_snapshot: studioSnapshot }),
-      cache: "no-store",
+      body: JSON.stringify({
+        message: promptMessage,
+        actor_role: "owner",
+        sync_to_n8n: false,
+      }),
     });
-    if (!res.ok) throw new Error("Failed to generate OpenAI executive brief.");
-    return (await res.json()) as { brief: string; model: string; openai_used: boolean };
+    return {
+      brief: agentRes.reply,
+      model: agentRes.intent === "AUTOPILOT" ? "backend-ai-agent" : "gpt-4o-mini (backend)",
+      openai_used: true,
+    };
   },
 
   // AI Agent Prompt & Autopilot
@@ -411,42 +426,6 @@ export const gymApi = {
     syncToN8n = true,
     actorPhone = ""
   ): Promise<AgentChatResponse> => {
-    const tenantId =
-      (typeof window !== "undefined" && window.localStorage.getItem("gymflow_tenant_id")) ||
-      process.env.NEXT_PUBLIC_TENANT_ID ||
-      "crush-main-studio";
-    const apiKey =
-      (typeof window !== "undefined" && window.localStorage.getItem("gymflow_api_key")) ||
-      process.env.NEXT_PUBLIC_API_KEY ||
-      "";
-    try {
-      const proxyRes = await fetch("/api/ai-copilot", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "chat",
-          message,
-          actor_role: actorRole,
-          actor_phone: actorPhone,
-          sync_to_n8n: syncToN8n,
-          api_base_url: getApiBaseUrl(),
-          tenant_id: tenantId,
-          api_key: apiKey,
-        }),
-        cache: "no-store",
-      });
-      if (proxyRes.ok) {
-        return (await proxyRes.json()) as AgentChatResponse;
-      }
-      const errBody = (await proxyRes.json().catch(() => ({}))) as { detail?: string };
-      if (proxyRes.status !== 502) {
-        throw new Error(errBody.detail || `HTTP ${proxyRes.status}`);
-      }
-    } catch (proxyErr) {
-      if (proxyErr instanceof Error && !proxyErr.message.includes("Failed to fetch")) {
-        // Retry directly against FastAPI in case user configured a localhost URL while Next server runs remotely
-      }
-    }
     return apiFetch<AgentChatResponse>("/api/v1/agent/chat", {
       method: "POST",
       body: JSON.stringify({
