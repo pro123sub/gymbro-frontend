@@ -310,6 +310,55 @@ export interface GstInvoice {
   billing_period: { from: string; to: string };
 }
 
+export interface CopilotStatus {
+  openai_configured: boolean;
+  openai_model: string;
+  api_base_url: string;
+  n8n_base_url: string;
+  google_sheet_id: string;
+  studio_name: string;
+  tenant_id: string;
+}
+
+export interface AutomationSimulationResult {
+  workflow_code: "GM-01" | "GM-02" | "GM-03" | "GM-04" | "GM-05" | "SEED";
+  title: string;
+  summary: string;
+  steps: Array<{
+    label: string;
+    status: "done" | "skipped" | "error";
+    detail: string;
+  }>;
+  raw_result: Record<string, unknown>;
+  timestamp_ist: string;
+}
+
+function formatIstDateOffset(offsetDays = 0): string {
+  const now = new Date();
+  const target = new Date(now.getTime() + offsetDays * 86400_000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(target);
+}
+
+function nowIstLabel(): string {
+  return `${new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+    .format(new Date())
+    .replace(",", "")} IST`;
+}
+
 /* ------------------------------- API Calls ------------------------------- */
 
 export const gymApi = {
@@ -328,12 +377,86 @@ export const gymApi = {
   getDashboardAnalytics: () => apiFetch<DashboardAnalytics>("/api/v1/analytics/dashboard"),
   getEnvChecklist: () => apiFetch<Record<string, unknown>>("/api/v1/automations/n8n/env-checklist"),
 
-  // AI Agent Prompt & Autopilot
-  sendAgentPrompt: (message: string, actorRole = "owner", syncToN8n = false) =>
-    apiFetch<AgentChatResponse>("/api/v1/agent/chat", {
+  // Next.js Server OpenAI + Backend Copilot Status & Brief
+  getCopilotStatus: async (): Promise<CopilotStatus> => {
+    const res = await fetch("/api/ai-copilot", { cache: "no-store" });
+    if (!res.ok) {
+      return {
+        openai_configured: false,
+        openai_model: "gpt-4o-mini",
+        api_base_url: getApiBaseUrl(),
+        n8n_base_url: "https://n8n-production-d690f344.up.railway.app",
+        google_sheet_id: "",
+        studio_name: "Crush Lifestyle Fitness Studio",
+        tenant_id: "crush-main-studio",
+      };
+    }
+    return (await res.json()) as CopilotStatus;
+  },
+  getExecutiveBrief: async (studioSnapshot: Record<string, unknown>) => {
+    const res = await fetch("/api/ai-copilot", {
       method: "POST",
-      body: JSON.stringify({ message, actor_role: actorRole, sync_to_n8n: syncToN8n }),
-    }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "executive_brief", studio_snapshot: studioSnapshot }),
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error("Failed to generate OpenAI executive brief.");
+    return (await res.json()) as { brief: string; model: string; openai_used: boolean };
+  },
+
+  // AI Agent Prompt & Autopilot
+  sendAgentPrompt: async (
+    message: string,
+    actorRole = "owner",
+    syncToN8n = true,
+    actorPhone = ""
+  ): Promise<AgentChatResponse> => {
+    const tenantId =
+      (typeof window !== "undefined" && window.localStorage.getItem("gymflow_tenant_id")) ||
+      process.env.NEXT_PUBLIC_TENANT_ID ||
+      "crush-main-studio";
+    const apiKey =
+      (typeof window !== "undefined" && window.localStorage.getItem("gymflow_api_key")) ||
+      process.env.NEXT_PUBLIC_API_KEY ||
+      "";
+    try {
+      const proxyRes = await fetch("/api/ai-copilot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "chat",
+          message,
+          actor_role: actorRole,
+          actor_phone: actorPhone,
+          sync_to_n8n: syncToN8n,
+          api_base_url: getApiBaseUrl(),
+          tenant_id: tenantId,
+          api_key: apiKey,
+        }),
+        cache: "no-store",
+      });
+      if (proxyRes.ok) {
+        return (await proxyRes.json()) as AgentChatResponse;
+      }
+      const errBody = (await proxyRes.json().catch(() => ({}))) as { detail?: string };
+      if (proxyRes.status !== 502) {
+        throw new Error(errBody.detail || `HTTP ${proxyRes.status}`);
+      }
+    } catch (proxyErr) {
+      if (proxyErr instanceof Error && !proxyErr.message.includes("Failed to fetch")) {
+        // Retry directly against FastAPI in case user configured a localhost URL while Next server runs remotely
+      }
+    }
+    return apiFetch<AgentChatResponse>("/api/v1/agent/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+        actor_role: actorRole,
+        actor_phone: actorPhone,
+        sync_to_n8n: syncToN8n,
+      }),
+    });
+  },
   runAutonomousCycle: () =>
     apiFetch<AgentChatResponse>("/api/v1/agent/autonomous-cycle", { method: "POST" }),
   getAgentRuns: () =>
@@ -511,4 +634,387 @@ export const gymApi = {
     ),
   pushSheetsSync: () => apiFetch<Record<string, unknown>>("/api/v1/sheets/sync/push", { method: "POST" }),
   pullSheetsSync: () => apiFetch<Record<string, unknown>>("/api/v1/sheets/sync/pull", { method: "POST" }),
+
+  // Interactive Experience Lab — One-Click End-to-End Automation Simulators
+  seedRichDemoScenario: async (): Promise<AutomationSimulationResult> => {
+    const existing = await gymApi.listMembers();
+    const existingPhones = new Set(existing.members.map((m) => m.phone));
+    const demoProfiles = [
+      {
+        name: "Aarav Sharma",
+        phone: "9876543210",
+        email: "aarav.sharma@crushfit.in",
+        plan: "Quarterly",
+        fee: 4000,
+        start_date: formatIstDateOffset(0),
+        payment_status: "Paid",
+        assigned_trainer: "Coach Vikram",
+        batch_slot: "Morning 7AM",
+        fitness_goal: "Strength & Fat Loss",
+        checkin: true,
+        freezeDays: 0,
+      },
+      {
+        name: "Riya Mukherjee",
+        phone: "9831022145",
+        email: "riya.m@crushfit.in",
+        plan: "Yearly",
+        fee: 13500,
+        start_date: formatIstDateOffset(-5),
+        payment_status: "Paid",
+        assigned_trainer: "Coach Ananya",
+        batch_slot: "Evening 6PM",
+        fitness_goal: "Athletic Conditioning",
+        checkin: true,
+        freezeDays: 0,
+      },
+      {
+        name: "Sayan Das",
+        phone: "9903011882",
+        email: "sayan.das@crushfit.in",
+        plan: "Monthly",
+        fee: 1500,
+        start_date: formatIstDateOffset(-10),
+        payment_status: "Pending",
+        assigned_trainer: "Coach Vikram",
+        batch_slot: "Morning 8AM",
+        fitness_goal: "Muscle Gain",
+        checkin: false,
+        freezeDays: 0,
+      },
+      {
+        name: "Kabir Bose",
+        phone: "9830155442",
+        email: "kabir.bose@crushfit.in",
+        plan: "Monthly",
+        fee: 1500,
+        start_date: formatIstDateOffset(-27),
+        payment_status: "Paid",
+        assigned_trainer: "Coach Rohan",
+        batch_slot: "Evening 7PM",
+        fitness_goal: "Weight Loss",
+        checkin: false,
+        freezeDays: 0,
+      },
+      {
+        name: "Meera Nair",
+        phone: "9845099881",
+        email: "meera.nair@crushfit.in",
+        plan: "Quarterly",
+        fee: 4000,
+        start_date: formatIstDateOffset(-12),
+        payment_status: "Paid",
+        assigned_trainer: "Coach Ananya",
+        batch_slot: "Morning 6AM",
+        fitness_goal: "Mobility & Core",
+        checkin: false,
+        freezeDays: 7,
+      },
+      {
+        name: "Vikram Joshi",
+        phone: "9820411223",
+        email: "vikram.j@crushfit.in",
+        plan: "Monthly",
+        fee: 1500,
+        start_date: formatIstDateOffset(-30),
+        payment_status: "Paid",
+        assigned_trainer: "Coach Rohan",
+        batch_slot: "Flexible",
+        fitness_goal: "General Fitness",
+        checkin: false,
+        freezeDays: 0,
+      },
+    ];
+
+    let createdCount = 0;
+    let checkinsCount = 0;
+    let freezeCount = 0;
+    for (const profile of demoProfiles) {
+      if (existingPhones.has(`91${profile.phone}`)) continue;
+      const created = await gymApi.createMember({
+        name: profile.name,
+        phone: profile.phone,
+        email: profile.email,
+        plan: profile.plan,
+        fee: profile.fee,
+        start_date: profile.start_date,
+        payment_status: profile.payment_status,
+        assigned_trainer: profile.assigned_trainer,
+        batch_slot: profile.batch_slot,
+        fitness_goal: profile.fitness_goal,
+        sync_to_n8n: false,
+      });
+      createdCount += 1;
+      if (profile.checkin) {
+        await gymApi.checkInMember({ member_id: created.member.member_id, workout_type: "Strength & Conditioning" });
+        checkinsCount += 1;
+      }
+      if (profile.freezeDays > 0) {
+        await gymApi.freezeMember(created.member.member_id, profile.freezeDays, "Travel pause (demo)");
+        freezeCount += 1;
+      }
+    }
+
+    const expRes = await gymApi.listExpenses();
+    let expensesAdded = 0;
+    if (expRes.expenses.length === 0) {
+      await gymApi.recordExpense({
+        category: "Rent",
+        amount: 3500,
+        vendor: "Indiranagar Studio Leasehold",
+        payment_mode: "Bank Transfer",
+        notes: "Studio utilities & maintenance retainer",
+      });
+      await gymApi.recordExpense({
+        category: "Electricity & Utilities",
+        amount: 1850,
+        vendor: "BESCOM Commercial",
+        payment_mode: "UPI",
+        notes: "Monthly AC & turf lighting",
+      });
+      expensesAdded = 2;
+    }
+
+    const pushRes = await gymApi.pushSheetsSync();
+    return {
+      workflow_code: "SEED",
+      title: "Studio Demo Scenario Hydrated",
+      summary: `Seeded ${createdCount} studio member(s) covering Active, T-3 Expiring, T-0 Expiring, Pending Dues, and Frozen states + ${checkinsCount} check-ins & ${expensesAdded} expenses.`,
+      steps: [
+        {
+          label: "1. Studio Profiles",
+          status: "done",
+          detail: `${createdCount} new members registered (${existing.count + createdCount} total)`,
+        },
+        {
+          label: "2. Attendance & Freeze State",
+          status: "done",
+          detail: `${checkinsCount} workout streak check-in(s) and ${freezeCount} active freeze window`,
+        },
+        {
+          label: "3. CFO Expense Ledger",
+          status: "done",
+          detail: expensesAdded > 0 ? `Added ${expensesAdded} operating expenses` : "Existing expense ledger preserved",
+        },
+        {
+          label: "4. Google Sheets Workbook",
+          status: "done",
+          detail: `Synced tabs locally (${String(pushRes.mode || "flushed")})`,
+        },
+      ],
+      raw_result: { createdCount, checkinsCount, freezeCount, expensesAdded, pushRes },
+      timestamp_ist: nowIstLabel(),
+    };
+  },
+
+  simulateGm01Registration: async (): Promise<AutomationSimulationResult> => {
+    const names = ["Rohan Kulkarni", "Tanya Banerjee", "Devika Menon", "Arjun Malhotra", "Ishaan Chatterjee", "Nandini Iyer"];
+    const name = names[Math.floor(Math.random() * names.length)];
+    const randSuffix = String(Math.floor(10000000 + Math.random() * 89999999));
+    const rawPhone = `98${randSuffix}`;
+    const emailSlug = name.toLowerCase().replace(/\s+/g, ".");
+    const created = await gymApi.createMember({
+      name,
+      phone: rawPhone,
+      email: `${emailSlug}+${randSuffix.slice(0, 3)}@crushfit.in`,
+      plan: "Quarterly",
+      fee: 4000,
+      start_date: formatIstDateOffset(0),
+      payment_status: "Paid",
+      payment_mode: "UPI",
+      fitness_goal: "Transformation & Strength",
+      batch_slot: "Morning 7AM",
+      assigned_trainer: "Coach Vikram",
+      sync_to_n8n: true,
+    });
+    const mem = created.member;
+    const sheetRow = await apiFetch<Record<string, unknown>>(`/api/v1/members/${encodeURIComponent(mem.member_id)}/sheets-row`);
+    const trig = await gymApi.triggerWorkflow("GM-01", {
+      member_id: mem.member_id,
+      name: mem.name,
+      phone: mem.phone,
+      email: mem.email,
+      plan: mem.plan,
+      fee: mem.fee,
+      expiry_date: mem.expiry_date,
+    });
+    const webhookRes = (trig.n8n_webhook || {}) as { status?: string; http_status?: number };
+    return {
+      workflow_code: "GM-01",
+      title: "GM-01 Smart Registration & 18-Col Google Sheets Sync",
+      summary: `Registered ${mem.name} (${mem.member_id}) · Phone normalized to +${mem.phone} · Valid till ${mem.expiry_date} · 18% GST receipt generated.`,
+      steps: [
+        { label: "1. Mobile & Plan Validation", status: "done", detail: `Normalized ${rawPhone} -> +${mem.phone}` },
+        { label: "2. MEM-ID & 18% GST Receipt", status: "done", detail: `${mem.member_id} | Fee ₹${mem.fee}` },
+        { label: "3. Google Sheets 18-Col Row", status: "done", detail: `${Object.keys(sheetRow).length} columns prepared` },
+        {
+          label: "4. Railway n8n GM-01 Webhook",
+          status: webhookRes.status === "SENT" ? "done" : "skipped",
+          detail: `Status: ${webhookRes.status || "LOGGED"}`,
+        },
+      ],
+      raw_result: { member: mem, google_sheets_row: sheetRow, n8n_trigger: trig },
+      timestamp_ist: nowIstLabel(),
+    };
+  },
+
+  simulateGm02EmailSweep: async (): Promise<AutomationSimulationResult> => {
+    const dueBefore = await gymApi.getDueFollowUps(true);
+    const dispatchRes = await gymApi.dispatchFollowUps({ dry_run: false });
+    const trig = await gymApi.triggerWorkflow("GM-02", {
+      due_count: dueBefore.count,
+      record_logs: true,
+      source: "ExperienceLab",
+    });
+    const webhookRes = (trig.n8n_webhook || {}) as { status?: string };
+    const dispatchedCount = Number((dispatchRes as { dispatched_count?: number }).dispatched_count ?? dueBefore.count);
+    return {
+      workflow_code: "GM-02",
+      title: "GM-02 Email Retention & Expiry Follow-Up Cadence",
+      summary: `Evaluated ${dueBefore.count} due member(s) and dispatched ${dispatchedCount} prioritized Email retention alert(s) via Gmail + n8n.`,
+      steps: [
+        { label: "1. Retention Stage Scanner", status: "done", detail: `${dueBefore.count} candidate(s) matched (T0/T3/Dues/Inactivity)` },
+        { label: "2. Email Copy Generation", status: "done", detail: `${dispatchedCount} personalized Email payload(s) queued` },
+        {
+          label: "3. Railway n8n GM-02 (Gmail)",
+          status: webhookRes.status === "SENT" ? "done" : "skipped",
+          detail: `Webhook dispatch: ${webhookRes.status || "QUEUED"}`,
+        },
+        { label: "4. Automation Audit Log", status: "done", detail: "Updated Follow-Up Logs & last_reminder_date" },
+      ],
+      raw_result: { due_before: dueBefore, dispatch: dispatchRes, n8n_trigger: trig },
+      timestamp_ist: nowIstLabel(),
+    };
+  },
+
+  simulateGm03PaymentRenewal: async (): Promise<AutomationSimulationResult> => {
+    const list = await gymApi.listMembers();
+    let target = list.members.find((m) => m.payment_status === "Pending") || list.members[0];
+    let autoCreatedPending = false;
+    if (!target) {
+      const randSuffix = String(Math.floor(10000000 + Math.random() * 89999999));
+      const res = await gymApi.createMember({
+        name: "Sayan Demo Renewal",
+        phone: `97${randSuffix}`,
+        email: `sayan.renewal+${randSuffix.slice(0, 3)}@crushfit.in`,
+        plan: "Monthly",
+        fee: 1500,
+        start_date: formatIstDateOffset(-25),
+        payment_status: "Pending",
+        sync_to_n8n: false,
+      });
+      target = res.member;
+      autoCreatedPending = true;
+    }
+    const payAmount = target.fee > 0 ? target.fee : 1500;
+    const payRes = await gymApi.recordPayment({
+      member_id: target.member_id,
+      amount_paid: payAmount,
+      payment_mode: "UPI",
+      extend_membership: true,
+      notes: "Instant renewal via GYMFLOW Experience Lab",
+    });
+    const invoice = await gymApi.getGstInvoice(payRes.payment.payment_id);
+    const trig = await gymApi.triggerWorkflow("GM-03", {
+      member_id: target.member_id,
+      payment_id: payRes.payment.payment_id,
+      invoice_number: payRes.payment.invoice_number,
+      amount_paid: payRes.payment.amount_paid,
+      new_expiry_date: payRes.member.expiry_date,
+    });
+    const webhookRes = (trig.n8n_webhook || {}) as { status?: string };
+    return {
+      workflow_code: "GM-03",
+      title: "GM-03 Payment Settlement & 18% GST Renewal Engine",
+      summary: `Confirmed ${payRes.payment.invoice_number} (₹${payRes.payment.amount_paid}, GST ₹${invoice.total_gst}) for ${target.name}. New expiry: ${payRes.member.expiry_date}.`,
+      steps: [
+        {
+          label: "1. Target Account",
+          status: "done",
+          detail: `${target.name} (${target.member_id})${autoCreatedPending ? " [demo created]" : ""}`,
+        },
+        {
+          label: "2. 18% GST Invoice Issued",
+          status: "done",
+          detail: `${invoice.invoice_number} (CGST ₹${invoice.cgst_amount} + SGST ₹${invoice.sgst_amount})`,
+        },
+        { label: "3. Expiry Auto-Extended", status: "done", detail: `New validity until ${payRes.member.expiry_date}` },
+        {
+          label: "4. Railway n8n GM-03 Webhook",
+          status: webhookRes.status === "SENT" ? "done" : "skipped",
+          detail: `Webhook dispatch: ${webhookRes.status || "LOGGED"}`,
+        },
+      ],
+      raw_result: { payment: payRes.payment, invoice, updated_member: payRes.member, n8n_trigger: trig },
+      timestamp_ist: nowIstLabel(),
+    };
+  },
+
+  simulateGm04OwnerDigest: async (): Promise<AutomationSimulationResult> => {
+    const trig = await gymApi.triggerWorkflow("GM-04", { source: "ExperienceLab" });
+    const localRes = (trig.local_result || {}) as {
+      followups_queued_count?: number;
+      status_transitions?: Array<unknown>;
+      accounts_summary?: { gross_collections?: number; net_profit?: number; pending_receivables_amount?: number };
+    };
+    const acc = localRes.accounts_summary || {};
+    const webhookRes = (trig.n8n_webhook || {}) as { status?: string };
+    return {
+      workflow_code: "GM-04",
+      title: "GM-04 Daily Owner Digest & Churn Radar",
+      summary: `Compiled Executive Digest: Gross ₹${acc.gross_collections ?? 0}, Net Profit ₹${acc.net_profit ?? 0}, Pending ₹${acc.pending_receivables_amount ?? 0}, ${localRes.followups_queued_count ?? 0} follow-up(s) queued.`,
+      steps: [
+        {
+          label: "1. Status Housekeeping",
+          status: "done",
+          detail: `${localRes.status_transitions?.length ?? 0} freeze/expiry transition(s)`,
+        },
+        {
+          label: "2. Churn & Retention Radar",
+          status: "done",
+          detail: `${localRes.followups_queued_count ?? 0} follow-up(s) surfaced`,
+        },
+        {
+          label: "3. CFO Accounts P&L Rollup",
+          status: "done",
+          detail: `Gross ₹${acc.gross_collections ?? 0} · Profit ₹${acc.net_profit ?? 0}`,
+        },
+        {
+          label: "4. Railway n8n GM-04 Digest",
+          status: webhookRes.status === "SENT" ? "done" : "skipped",
+          detail: `Webhook dispatch: ${webhookRes.status || "LOGGED"}`,
+        },
+      ],
+      raw_result: trig,
+      timestamp_ist: nowIstLabel(),
+    };
+  },
+
+  simulateGm05AiAutopilot: async (
+    customPrompt = "Run full gym autopilot: update expired/unfrozen statuses, evaluate and queue retention follow-ups, and compile CFO P&L summary."
+  ): Promise<AutomationSimulationResult> => {
+    const agentRes = await gymApi.sendAgentPrompt(customPrompt, "owner", true);
+    const n8nStatus = String((agentRes.n8n_dispatch as { status?: string })?.status || "LOGGED");
+    return {
+      workflow_code: "GM-05",
+      title: "GM-05 OpenAI GPT-4o-mini Autonomous Gym Manager",
+      summary: agentRes.reply,
+      steps: [
+        { label: "1. OpenAI GPT-4o-mini Planner", status: "done", detail: `Intent: ${agentRes.intent}` },
+        {
+          label: "2. FastAPI Tool Calls",
+          status: "done",
+          detail: `${agentRes.tools_executed.length} tool(s): ${agentRes.tools_executed.map((t) => t.tool_name).join(", ") || "direct reply"}`,
+        },
+        { label: "3. Google Sheets Audit Sync", status: "done", detail: `Run ${agentRes.run_id} logged to Agent Runs & Automation Log` },
+        {
+          label: "4. Railway n8n GM-05 Webhook",
+          status: n8nStatus === "SENT" ? "done" : "skipped",
+          detail: `Status: ${n8nStatus}`,
+        },
+      ],
+      raw_result: agentRes as unknown as Record<string, unknown>,
+      timestamp_ist: agentRes.timestamp_ist || nowIstLabel(),
+    };
+  },
 };
