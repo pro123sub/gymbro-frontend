@@ -15,8 +15,18 @@ import {
   ExternalLink,
   Workflow,
   Server,
+  Database,
+  Zap,
 } from "lucide-react";
-import { ScheduledJob, WorkflowItem, gymApi, getApiBaseUrl } from "@/lib/api";
+import {
+  ExecutiveSheetsView,
+  MasterDbStatus,
+  ScheduledJob,
+  WorkflowItem,
+  downloadExcelCsv,
+  gymApi,
+  getApiBaseUrl,
+} from "@/lib/api";
 
 const SHEET_TABS = [
   "Members",
@@ -34,6 +44,8 @@ export default function AutomationControlTab({
   workflows,
   schedules,
   sheetsStatus,
+  masterDbStatus,
+  executiveView,
   n8nBaseUrl,
   onRefresh,
   onToast,
@@ -41,10 +53,14 @@ export default function AutomationControlTab({
   workflows: WorkflowItem[];
   schedules: ScheduledJob[];
   sheetsStatus: Record<string, unknown> | null;
+  masterDbStatus?: MasterDbStatus | null;
+  executiveView?: ExecutiveSheetsView | null;
   n8nBaseUrl?: string;
   onRefresh: () => Promise<void>;
   onToast: (msg: string, isError?: boolean) => void;
 }) {
+  const [sheetViewMode, setSheetViewMode] = useState<"executive" | "raw">("executive");
+  const [selectedExecTab, setSelectedExecTab] = useState("Executive Summary & KPIs");
   const [selectedTab, setSelectedTab] = useState("Members");
   const [tabRows, setTabRows] = useState<Array<Record<string, unknown>>>([]);
   const [loadingTab, setLoadingTab] = useState(false);
@@ -106,6 +122,63 @@ export default function AutomationControlTab({
 
   return (
     <div className="space-y-6">
+      {/* Master Render PostgreSQL Pipeline Card */}
+      <div className="rounded-3xl border border-emerald-300/40 bg-gradient-to-r from-[#071912] via-[#0e2a1e] to-[#133828] p-6 text-white shadow-md">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-lime-neon text-forest">
+              <Database className="h-5 w-5" />
+            </span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-base font-extrabold text-white">
+                  Master Database: {masterDbStatus?.master_engine || "PostgreSQL (Render)"}
+                </h3>
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-[10px] font-extrabold ${
+                    masterDbStatus?.postgresql_connected
+                      ? "bg-lime-neon text-forest"
+                      : "bg-amber-300 text-slate-900"
+                  }`}
+                >
+                  {masterDbStatus?.postgresql_connected
+                    ? `CONNECTED · ${masterDbStatus.database}`
+                    : masterDbStatus?.postgresql_configured
+                      ? "RECONNECTING"
+                      : "LOCAL WORKBOOK MODE"}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-emerald-100/80">
+                {masterDbStatus?.write_pipeline ||
+                  "1. FastAPI Automation -> 2. Master PostgreSQL ACID Commit -> 3. Executive Google Sheets / Excel Projection"}
+              </p>
+              {masterDbStatus?.host && (
+                <p className="mt-1 font-mono text-[11px] text-emerald-200/70">
+                  Host: {masterDbStatus.host} · Last Sync: {masterDbStatus.last_pg_sync_ist}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={() =>
+              void runAction("master-pipeline", async () => {
+                const res = await gymApi.runMasterSyncAndAnalyze();
+                onToast(
+                  `Master DB Synced (${res.master_database.counts.Members ?? 0} members) -> Trends & Executive Sheets updated.`
+                );
+              })
+            }
+            className="inline-flex items-center gap-1.5 rounded-full bg-lime-neon px-4 py-2.5 text-xs font-extrabold text-forest transition hover:brightness-95 disabled:opacity-50"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            {busyAction === "master-pipeline" ? "Syncing Master DB..." : "Run Master Sync + Trends + Follow-Ups"}
+          </button>
+        </div>
+      </div>
+
       {/* Workflow Control Plane (GM-01 .. GM-05) */}
       <div className="rounded-3xl border border-slate-200/90 bg-white p-6 shadow-sm">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -400,7 +473,7 @@ export default function AutomationControlTab({
         </div>
       </div>
 
-      {/* Live 100% Google Sheets Workbook Explorer & Sync */}
+      {/* Live Google Sheets Executive Presentation & Database Explorer */}
       <div className="rounded-3xl border border-slate-200/90 bg-white p-6 shadow-sm">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -409,14 +482,34 @@ export default function AutomationControlTab({
             </span>
             <div>
               <h4 className="text-sm font-bold text-slate-900">
-                100% Google Sheets Workbook Database ({String(sheetsStatus?.google_sheets_mode ?? "n8n_bridge")})
+                Executive Google Sheets &amp; Excel Representation (Admin View)
               </h4>
               <p className="text-xs text-slate-500">
-                Spreadsheet ID: <code className="font-mono text-forest-accent">{sheetId || "—"}</code>
+                Spreadsheet ID: <code className="font-mono text-forest-accent">{sheetId || "—"}</code> · Built cleanly from Master PostgreSQL
               </p>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setSheetViewMode("executive")}
+                className={`rounded-full px-3 py-1 font-semibold transition ${
+                  sheetViewMode === "executive" ? "bg-forest text-lime-neon" : "text-slate-600"
+                }`}
+              >
+                Executive Views ({executiveView?.tab_order.length || 5})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSheetViewMode("raw")}
+                className={`rounded-full px-3 py-1 font-semibold transition ${
+                  sheetViewMode === "raw" ? "bg-forest text-lime-neon" : "text-slate-600"
+                }`}
+              >
+                Master DB Tables
+              </button>
+            </div>
             {sheetId && !sheetId.startsWith("REPLACE_WITH") && (
               <a
                 href={`https://docs.google.com/spreadsheets/d/${sheetId}`}
@@ -429,6 +522,25 @@ export default function AutomationControlTab({
             )}
             <button
               type="button"
+              onClick={() => {
+                const activeRows =
+                  sheetViewMode === "executive"
+                    ? executiveView?.tabs[selectedExecTab] || []
+                    : tabRows;
+                const activeName = sheetViewMode === "executive" ? selectedExecTab : selectedTab;
+                if (activeRows.length === 0) {
+                  onToast("No rows in the selected tab to export yet.", true);
+                  return;
+                }
+                downloadExcelCsv(activeName, activeRows);
+                onToast(`Exported "${activeName}" to Excel-ready CSV.`);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-[#eef7e6] px-3.5 py-1.5 text-xs font-bold text-forest-accent hover:bg-lime-neon hover:text-forest"
+            >
+              <DownloadCloud className="h-3.5 w-3.5" /> Download Excel (.csv)
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 void runAction("sheets-push", async () => {
                   const r = await gymApi.pushSheetsSync();
@@ -437,95 +549,169 @@ export default function AutomationControlTab({
               }
               className="inline-flex items-center gap-1.5 rounded-full bg-lime-neon px-3.5 py-1.5 text-xs font-bold text-forest"
             >
-              <UploadCloud className="h-3.5 w-3.5" /> Push Snapshot
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void runAction("sheets-pull", async () => {
-                  await gymApi.pullSheetsSync();
-                  onToast("Pulled latest rows from Google Sheets store.");
-                })
-              }
-              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-            >
-              <DownloadCloud className="h-3.5 w-3.5" /> Pull Snapshot
+              <UploadCloud className="h-3.5 w-3.5" /> Push to Google Sheets
             </button>
           </div>
         </div>
 
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {SHEET_TABS.map((tab) => {
-            const count = sheetCounts[tab];
-            return (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setSelectedTab(tab)}
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${
-                  selectedTab === tab
-                    ? "bg-forest text-lime-neon"
-                    : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
-                }`}
-              >
-                <span>{tab}</span>
-                {typeof count === "number" && (
-                  <span
-                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                      selectedTab === tab ? "bg-lime-neon/20 text-lime-neon" : "bg-slate-200 text-slate-700"
+        {sheetViewMode === "executive" ? (
+          <>
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {(executiveView?.tab_order || [
+                "Executive Summary & KPIs",
+                "Customer Master Directory",
+                "GST Billing & Revenue Ledger",
+                "Automated Trends & Cohort Insights",
+                "Retention & Follow-Up Queue",
+              ]).map((tab) => {
+                const count = executiveView?.counts[tab];
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setSelectedExecTab(tab)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${
+                      selectedExecTab === tab
+                        ? "bg-forest text-lime-neon"
+                        : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
                     }`}
                   >
-                    {count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+                    <span>{tab}</span>
+                    {typeof count === "number" && (
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                          selectedExecTab === tab ? "bg-lime-neon/20 text-lime-neon" : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
 
-        {loadingTab ? (
-          <div className="flex items-center gap-2 py-6 text-xs text-slate-500">
-            <RefreshCw className="h-4 w-4 animate-spin" /> Loading {selectedTab} rows...
-          </div>
-        ) : (
-          <div className="max-h-72 overflow-auto rounded-2xl border border-slate-200">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
-                <tr>
-                  {tabRows.length > 0 ? (
-                    Object.keys(tabRows[0])
-                      .slice(0, 8)
-                      .map((col) => (
-                        <th key={col} className="whitespace-nowrap px-3 py-2.5 font-semibold">
-                          {col}
-                        </th>
-                      ))
-                  ) : (
-                    <th className="px-3 py-2.5">Empty Tab</th>
-                  )}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {tabRows.length === 0 ? (
-                  <tr>
-                    <td className="px-3 py-8 text-center text-slate-400">No rows in {selectedTab} yet.</td>
-                  </tr>
-                ) : (
-                  tabRows.slice(0, 25).map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/80">
-                      {Object.keys(tabRows[0])
-                        .slice(0, 8)
-                        .map((col) => (
-                          <td key={col} className="max-w-[220px] truncate px-3 py-2 text-slate-700">
-                            {typeof row[col] === "object" ? JSON.stringify(row[col]) : String(row[col] ?? "")}
+            {(() => {
+              const rows = executiveView?.tabs[selectedExecTab] || [];
+              const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+              return (
+                <div className="max-h-80 overflow-auto rounded-2xl border border-slate-200">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                      <tr>
+                        {cols.length > 0 ? (
+                          cols.map((col) => (
+                            <th key={col} className="whitespace-nowrap px-3.5 py-2.5 font-semibold">
+                              {col}
+                            </th>
+                          ))
+                        ) : (
+                          <th className="px-3.5 py-2.5">Empty Executive View</th>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {rows.length === 0 ? (
+                        <tr>
+                          <td className="px-3.5 py-8 text-center text-slate-400">
+                            No records in {selectedExecTab} yet. Click &ldquo;Seed Live Demo Gym&rdquo; in the sidebar!
                           </td>
-                        ))}
+                        </tr>
+                      ) : (
+                        rows.slice(0, 40).map((row, idx) => (
+                          <tr key={idx} className="hover:bg-[#f4f9f6]">
+                            {cols.map((col) => (
+                              <td key={col} className="max-w-[260px] truncate px-3.5 py-2.5 text-slate-700" title={String(row[col] ?? "")}>
+                                {typeof row[col] === "object" && row[col] !== null
+                                  ? JSON.stringify(row[col])
+                                  : String(row[col] ?? "")}
+                              </td>
+                            ))}
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {SHEET_TABS.map((tab) => {
+                const count = sheetCounts[tab];
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setSelectedTab(tab)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${
+                      selectedTab === tab
+                        ? "bg-forest text-lime-neon"
+                        : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    <span>{tab}</span>
+                    {typeof count === "number" && (
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                          selectedTab === tab ? "bg-lime-neon/20 text-lime-neon" : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {loadingTab ? (
+              <div className="flex items-center gap-2 py-6 text-xs text-slate-500">
+                <RefreshCw className="h-4 w-4 animate-spin" /> Loading {selectedTab} rows...
+              </div>
+            ) : (
+              <div className="max-h-72 overflow-auto rounded-2xl border border-slate-200">
+                <table className="w-full text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-[11px] uppercase text-slate-500">
+                    <tr>
+                      {tabRows.length > 0 ? (
+                        Object.keys(tabRows[0])
+                          .slice(0, 8)
+                          .map((col) => (
+                            <th key={col} className="whitespace-nowrap px-3 py-2.5 font-semibold">
+                              {col}
+                            </th>
+                          ))
+                      ) : (
+                        <th className="px-3 py-2.5">Empty Tab</th>
+                      )}
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {tabRows.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-8 text-center text-slate-400">No rows in {selectedTab} yet.</td>
+                      </tr>
+                    ) : (
+                      tabRows.slice(0, 25).map((row, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/80">
+                          {Object.keys(tabRows[0])
+                            .slice(0, 8)
+                            .map((col) => (
+                              <td key={col} className="max-w-[220px] truncate px-3 py-2 text-slate-700">
+                                {typeof row[col] === "object" ? JSON.stringify(row[col]) : String(row[col] ?? "")}
+                              </td>
+                            ))}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
 

@@ -331,6 +331,87 @@ export interface AutomationSimulationResult {
   timestamp_ist: string;
 }
 
+export interface MasterDbStatus {
+  master_engine: string;
+  postgresql_configured: boolean;
+  postgresql_connected: boolean;
+  host: string;
+  database: string;
+  write_pipeline: string;
+  last_pg_sync_ist: string;
+  last_error: string;
+  counts: Record<string, number>;
+}
+
+export interface AutomatedTrendsResponse {
+  as_of_ist: string;
+  studio_health_score: number;
+  retention_rate_pct: number;
+  collection_efficiency_pct: number;
+  average_revenue_per_member: number;
+  summary_counts: {
+    total_members: number;
+    active_members: number;
+    frozen_members: number;
+    expired_members: number;
+    pending_dues_count: number;
+    pending_dues_amount: number;
+    checkins_today: number;
+    total_checkins: number;
+  };
+  financial_pulse: {
+    gross_collections_inr: number;
+    gst_collected_inr: number;
+    net_revenue_ex_gst_inr: number;
+    operating_expenses_inr: number;
+    net_profit_inr: number;
+  };
+  package_mix: Array<{ plan: string; members_count: number; share_pct: number; revenue_inr: number }>;
+  batch_slot_popularity: Array<{ batch_slot: string; members_count: number; share_pct: number }>;
+  workout_type_trends: Array<{ workout_type: string; checkins_count: number; share_pct: number }>;
+  churn_risk_radar: {
+    expiring_3d: Array<Record<string, unknown>>;
+    expiring_7d: Array<Record<string, unknown>>;
+    inactive_5d: Array<Record<string, unknown>>;
+    pending_dues: Array<Record<string, unknown>>;
+  };
+  top_streaks: Array<Record<string, unknown>>;
+  automated_insights: Array<{
+    category: string;
+    severity: string;
+    title: string;
+    action_hint: string;
+  }>;
+}
+
+export interface ExecutiveSheetsView {
+  generated_at_ist: string;
+  spreadsheet_id: string;
+  spreadsheet_name: string;
+  tab_order: string[];
+  counts: Record<string, number>;
+  tabs: Record<string, Array<Record<string, unknown>>>;
+}
+
+export function downloadExcelCsv(sheetTitle: string, rows: Array<Record<string, unknown>>): void {
+  if (typeof window === "undefined" || rows.length === 0) return;
+  const cols = Object.keys(rows[0]);
+  const esc = (v: unknown) => {
+    const raw = typeof v === "object" && v !== null ? JSON.stringify(v) : String(v ?? "");
+    return `"${raw.replace(/"/g, '""')}"`;
+  };
+  const csvLines = [cols.map(esc).join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))];
+  const blob = new Blob(["\uFEFF" + csvLines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${sheetTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function formatIstDateOffset(offsetDays = 0): string {
   const now = new Date();
   const target = new Date(now.getTime() + offsetDays * 86400_000);
@@ -613,6 +694,17 @@ export const gymApi = {
     ),
   pushSheetsSync: () => apiFetch<Record<string, unknown>>("/api/v1/sheets/sync/push", { method: "POST" }),
   pullSheetsSync: () => apiFetch<Record<string, unknown>>("/api/v1/sheets/sync/pull", { method: "POST" }),
+  getMasterDbStatus: () => apiFetch<MasterDbStatus>("/api/v1/database/master-status"),
+  getAutomatedTrends: () => apiFetch<AutomatedTrendsResponse>("/api/v1/analytics/trends"),
+  getExecutiveSheetsView: () => apiFetch<ExecutiveSheetsView>("/api/v1/sheets/executive-view"),
+  runMasterSyncAndAnalyze: () =>
+    apiFetch<{
+      master_database: MasterDbStatus;
+      autopilot: Record<string, unknown>;
+      trends: AutomatedTrendsResponse;
+      executive_sheets_counts: Record<string, number>;
+      sheets_sync: Record<string, unknown>;
+    }>("/api/v1/automations/master-sync-and-analyze", { method: "POST" }),
 
   // Interactive Experience Lab — One-Click End-to-End Automation Simulators
   seedRichDemoScenario: async (): Promise<AutomationSimulationResult> => {
