@@ -3,34 +3,32 @@
 @tailwind utilities;
 
 :root {
-  --bg-forest: #071912;
-  --bg-forest-pill: #183d2d;
-  --accent-lime: #b9f44d;
-  --accent-emerald: #136343;
-  --bg-canvas: #f2f5f3;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --bg-dark-obsidian: #09120e;
+  --bg-dark-surface: #0e1c16;
+  --bg-emerald-accent: #10b981;
+  --bg-emerald-deep: #064e3b;
+  --bg-surface-canvas: #f8fafc;
 }
 
 body {
-  background-color: #f2f5f3;
+  background-color: #f8fafc;
   color: #0f172a;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 ::selection {
-  background-color: #b9f44d;
-  color: #071912;
-}
-
-.bg-command-grid {
-  background-image:
-    linear-gradient(to right, rgba(185, 244, 77, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(185, 244, 77, 0.05) 1px, transparent 1px);
-  background-size: 28px 28px;
+  background-color: #a7f3d0;
+  color: #064e3b;
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
 
+/* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -47,4 +45,15 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* Clean glassmorphism & card elevation */
+.card-subtle {
+  background: #ffffff;
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+}
+
+.card-subtle:hover {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.06);
 }
